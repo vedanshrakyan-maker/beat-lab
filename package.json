@@ -24,7 +24,8 @@
     "db:reset": "prisma migrate reset --force --skip-seed && tsx prisma/seed.ts",
     "ledger:verify": "tsx scripts/ledger-verify.ts",
     "fraud:simulate": "tsx scripts/fraud-simulate.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "youtube:check": "tsx scripts/youtube-check.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.3",

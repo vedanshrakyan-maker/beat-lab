@@ -270,3 +270,59 @@ export async function refreshExpiringTokens(
   }
   return { refreshed, disconnected };
 }
+
+// ---------------------------------------------------------------------------
+// YouTube OAuth (live): channels.list?mine=true proves ownership.
+// ---------------------------------------------------------------------------
+
+export async function completeYouTubeOAuth(
+  userId: string,
+  code: string,
+  actor: Actor,
+): Promise<SocialAccount> {
+  const { exchangeGoogleCode } = await import("@/platforms/google-oauth");
+  const adapter = getAdapter("YOUTUBE");
+  if (!(adapter instanceof YouTubeAdapter))
+    throw new SocialAccountError("YouTube OAuth needs YOUTUBE_ADAPTER=live");
+  const token = await exchangeGoogleCode(code);
+  const res = await fetch(
+    "https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&mine=true",
+    {
+      headers: { Authorization: `Bearer ${token.accessToken}` },
+    },
+  );
+  const data = (await res.json()) as {
+    items?: {
+      id: string;
+      snippet?: { customUrl?: string; title?: string; publishedAt?: string };
+      statistics?: { subscriberCount?: string };
+    }[];
+  };
+  const ch = data.items?.[0];
+  if (!ch) throw new SocialAccountError("No YouTube channel on this Google account");
+  await ensureNotClaimed("YOUTUBE", ch.id, userId);
+  return db.$transaction(async (tx) => {
+    const fields = {
+      handle: (ch.snippet?.customUrl ?? ch.snippet?.title ?? ch.id).replace(/^@/, ""),
+      followerCount: Number(ch.statistics?.subscriberCount ?? 0),
+      accountCreatedAt: ch.snippet?.publishedAt ? new Date(ch.snippet.publishedAt) : null,
+      verificationMethod: "OAUTH" as const,
+      verifiedAt: new Date(),
+      encryptedAccessToken: encrypt(token.accessToken),
+      encryptedRefreshToken: token.refreshToken ? encrypt(token.refreshToken) : null,
+      tokenExpiresAt: token.expiresAt,
+      status: "VERIFIED" as const,
+    };
+    const account = await tx.socialAccount.upsert({
+      where: { platform_platformAccountId: { platform: "YOUTUBE", platformAccountId: ch.id } },
+      create: { userId, platform: "YOUTUBE", platformAccountId: ch.id, ...fields },
+      update: fields,
+    });
+    await audit(tx, actor, "social_account.connect", "SocialAccount", account.id, undefined, {
+      platform: "YOUTUBE",
+      handle: fields.handle,
+      method: "OAUTH",
+    });
+    return account;
+  });
+}

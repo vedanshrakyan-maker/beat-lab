@@ -83,6 +83,14 @@ export default async function AccountsPage() {
                 <SubmitButton>Connect</SubmitButton>
               </ActionForm>
             ) : null}
+            {!ytMock ? (
+              <a
+                href="/api/oauth/youtube/start"
+                className="text-accent mt-4 mr-4 inline-block text-sm underline"
+              >
+                Connect YouTube with Google →
+              </a>
+            ) : null}
             {!igMock ? (
               <a
                 href="/api/oauth/instagram/start"
