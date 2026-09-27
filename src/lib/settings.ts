@@ -54,6 +54,8 @@ export const fraudSettingsSchema = z.object({
     smallAccountMinViews: z.number().int().nonnegative(),
     plateauBandPct: z.number().min(0).max(0.5),
     plateauMinSnapshots: z.number().int().min(2),
+    /** Growth into the cap band that marks an unnatural plateau (natural saturation creeps in slowly). */
+    plateauEntryMinGrowth: z.number().min(0).max(5).default(0.1),
     viewDropFlagPct: z.number().min(0).max(1),
     viewDropNoticePct: z.number().min(0).max(1),
   }),
@@ -92,6 +94,7 @@ export const defaultFraudSettings: FraudSettings = {
     smallAccountMinViews: 20_000,
     plateauBandPct: 0.02,
     plateauMinSnapshots: 2,
+    plateauEntryMinGrowth: 0.1,
     viewDropFlagPct: 0.2,
     viewDropNoticePct: 0.05,
   },

@@ -136,6 +136,23 @@ describe("PLATEAU_AT_CAP", () => {
     expect(s?.score).toBe(85);
     expect(s?.evidence.capViews).toBe(166_667);
   });
+  it("does not flag a clip whose natural total happens to saturate near the cap", () => {
+    // Organic decay: creeps into the band (~3% growth per day), no jump.
+    expect(
+      plateauAtCap.evaluate(
+        ctx({
+          snapshots: [
+            snap(1, 20_000),
+            snap(24, 140_000),
+            snap(48, 158_000),
+            snap(72, 163_500),
+            snap(96, 165_800),
+            snap(120, 166_600),
+          ],
+        }),
+      ),
+    ).toBeNull();
+  });
   it("does not flag clips that grow through the cap", () => {
     expect(
       plateauAtCap.evaluate(ctx({ snapshots: [snap(1, 20_000), snap(24, 165_000), snap(48, 260_000)] })),

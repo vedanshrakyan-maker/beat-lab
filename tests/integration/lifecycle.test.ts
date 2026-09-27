@@ -196,6 +196,7 @@ describe("submission lifecycle (mock platforms)", () => {
     const clipper = await joined(campaign.id);
     const res = await submitAt(clipper, campaign.id, reelUrl("clean_viral"), daysAgo(20));
     await catchUpSubmission(res.submission.id);
+    await expectPayable(res.submission.id);
     await savePayoutProfile(
       clipper.user.id,
       { legalName: "Ravi Kumar", upiId: "ravi@ybl" },
@@ -231,6 +232,7 @@ describe("submission lifecycle (mock platforms)", () => {
     const clipper = await joined(campaign.id);
     const res = await submitAt(clipper, campaign.id, reelUrl("clean_viral"), daysAgo(20));
     await catchUpSubmission(res.submission.id);
+    await expectPayable(res.submission.id);
     await savePayoutProfile(
       clipper.user.id,
       { legalName: "Fail Case", upiId: "fail.case@ybl" },

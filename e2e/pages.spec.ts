@@ -61,7 +61,7 @@ test("detail pages render (admin)", async ({ page }) => {
   await page.locator("a[href^='/admin/review/']").first().click();
   await expect(page.getByRole("heading", { name: "Fraud signals" })).toBeVisible();
   await page.goto("/admin/campaigns");
-  await page.locator("a[href^='/funder/campaigns/']").first().click();
+  await page.locator("tr", { hasText: "Active" }).locator("a[href^='/funder/campaigns/']").first().click();
   await expect(page.getByRole("heading", { name: "Fraud blocked" })).toBeVisible();
   check();
 });
