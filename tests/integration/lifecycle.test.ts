@@ -32,6 +32,14 @@ async function submitAt(
   );
 }
 
+async function expectPayable(id: string) {
+  const s = await db.submission.findUniqueOrThrow({ where: { id }, include: { fraudSignals: true } });
+  expect({
+    status: s.status,
+    signals: s.fraudSignals.map((f) => `${f.phase}:${f.ruleKey}:${f.score}`),
+  }).toMatchObject({ status: "PAYABLE" });
+}
+
 async function ledgerOk() {
   const r = await verifyLedger();
   expect(r.checks.filter((c) => !c.ok)).toEqual([]);

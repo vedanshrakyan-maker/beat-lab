@@ -20,8 +20,8 @@ export async function SiteNav() {
 
   return (
     <header className="border-border bg-bg/85 sticky top-0 z-20 border-b backdrop-blur">
-      <div className="mx-auto flex h-14 max-w-6xl items-center gap-4 px-4 md:px-8">
-        <Link href="/" className="font-serif text-lg tracking-tight">
+      <div className="mx-auto flex h-14 max-w-6xl items-center gap-2 px-4 md:gap-4 md:px-8">
+        <Link href="/" className="shrink-0 font-serif text-lg tracking-tight">
           Reel<span className="text-accent">Pay</span>
         </Link>
         <nav className="flex flex-1 items-center gap-1 overflow-x-auto text-sm">
@@ -29,7 +29,7 @@ export async function SiteNav() {
             <Link
               key={l.href}
               href={l.href}
-              className="text-muted hover:bg-surface-2 hover:text-fg rounded-full px-3 py-1.5"
+              className="text-muted hover:bg-surface-2 hover:text-fg rounded-full px-2 py-1.5 whitespace-nowrap md:px-3"
             >
               {l.label}
             </Link>
@@ -51,8 +51,12 @@ export async function SiteNav() {
             </Link>
             <span className="text-muted hidden max-w-40 truncate md:inline">{user.name ?? user.email}</span>
             <form action={doSignOut}>
-              <button className="text-muted hover:bg-surface-2 hover:text-fg rounded-full px-3 py-1.5">
-                {t("nav.signOut")}
+              <button
+                className="text-muted hover:bg-surface-2 hover:text-fg rounded-full px-2 py-1.5 md:px-3"
+                aria-label={t("nav.signOut")}
+              >
+                <span className="hidden md:inline">{t("nav.signOut")}</span>
+                <span className="md:hidden">⎋</span>
               </button>
             </form>
           </div>

@@ -14,7 +14,8 @@ export const smallAccountOutlier: FraudRule = {
     const { followerCount, accountCreatedAt } = ctx.account;
     const ageDays = accountCreatedAt ? (ctx.now.getTime() - accountCreatedAt.getTime()) / 86_400_000 : null;
     const small = followerCount < t.smallAccountFollowers;
-    const young = ageDays !== null && ageDays < t.smallAccountAgeDays;
+    // A negative age means bad data (account "created" after the post): ignore rather than guess.
+    const young = ageDays !== null && ageDays >= 0 && ageDays < t.smallAccountAgeDays;
     if (!small && !young) return null;
 
     const cutoff = ctx.submission.startedAt.getTime() + 24 * 3_600_000;

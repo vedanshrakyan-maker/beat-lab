@@ -165,3 +165,10 @@ export function formatCount(n: number): string {
 export function jsonSafe<T>(value: T): unknown {
   return JSON.parse(JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? v.toString() : v)));
 }
+
+/** Plain decimal rupees for CSV/exports: 123450n -> "1234.50" (no grouping, no symbol). */
+export function toDecimalRupees(amount: Paise): string {
+  const negative = amount < 0n;
+  const abs = negative ? -amount : amount;
+  return `${negative ? "-" : ""}${abs / PAISE_PER_RUPEE}.${(abs % PAISE_PER_RUPEE).toString().padStart(2, "0")}`;
+}

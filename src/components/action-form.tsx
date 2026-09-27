@@ -56,11 +56,19 @@ export function FormMessage({ state }: { state: ActionState }) {
 export function SubmitButton({
   children,
   pendingText,
+  disabled,
   ...props
-}: { children: ReactNode; pendingText?: string; className?: string } & VariantProps<typeof buttonVariants>) {
+}: {
+  children: ReactNode;
+  pendingText?: string;
+  className?: string;
+  disabled?: boolean;
+  name?: string;
+  value?: string;
+} & VariantProps<typeof buttonVariants>) {
   const { pending } = useFormStatus();
   return (
-    <Button type="submit" disabled={pending} {...props}>
+    <Button type="submit" disabled={pending || disabled} {...props}>
       {pending ? (pendingText ?? "Working…") : children}
     </Button>
   );

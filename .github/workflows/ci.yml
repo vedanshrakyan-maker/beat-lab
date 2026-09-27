@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5432/reelpay?schema=public
+  TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/reelpay_test?schema=public
+  APP_ENV: test
+  APP_URL: http://localhost:3000
+  AUTH_SECRET: ci-only-auth-secret-000000000000000000000000
+  AUTH_TRUST_HOST: "true"
+  ALLOW_DEV_LOGIN: "true"
+  # CI-only throwaway key (32 bytes, base64). Never a real secret.
+  ENCRYPTION_KEY: Y2ktb25seS1rZXktbm90LWEtcmVhbC1zZWNyZXQhISE=
+  YOUTUBE_ADAPTER: mock
+  INSTAGRAM_ADAPTER: mock
+  PAYMENTS_PROVIDER: mock
+  EMAIL_PROVIDER: console
+
+jobs:
+  checks:
+    name: Lint, typecheck, test, fraud simulation, ledger verify, build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: reelpay
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Create test database
+        run: PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE reelpay_test"
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm test
+      - name: Fraud simulation (acceptance gate)
+        run: npm run fraud:simulate
+      - name: Migrate and seed
+        run: npm run db:deploy && npm run db:seed
+      - name: Ledger integrity against seed data
+        run: npm run ledger:verify
+      - run: npm run build
+
+  e2e:
+    name: E2E smoke (Playwright)
+    runs-on: ubuntu-latest
+    needs: checks
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: reelpay
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run db:deploy && npm run db:seed
+      - run: npm run build
+      - run: npm run test:e2e
+        env:
+          CI: "true"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7

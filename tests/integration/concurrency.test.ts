@@ -38,14 +38,12 @@ describe("budget reservation under concurrency", () => {
 
     // 50 clips each wanting ₹300 (10,000 views) — ₹15,000 of demand for ₹49.99 of budget.
     const results = await Promise.allSettled(
-      subs
-        .slice(1)
-        .map((s, i) =>
-          db.$transaction((tx) => accrue(tx, s.id, 10_000, `race:${i}`), {
-            maxWait: 30_000,
-            timeout: 60_000,
-          }),
-        ),
+      subs.slice(1).map((s, i) =>
+        db.$transaction((tx) => accrue(tx, s.id, 10_000, `race:${i}`), {
+          maxWait: 30_000,
+          timeout: 60_000,
+        }),
+      ),
     );
     expect(results.filter((r) => r.status === "rejected")).toEqual([]);
 

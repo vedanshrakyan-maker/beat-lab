@@ -2,7 +2,7 @@ import type { TaxRule } from "@prisma/client";
 import { z } from "zod";
 import { audit, type Actor } from "@/lib/audit";
 import { db, type DbOrTx } from "@/lib/db";
-import { bpsOf, formatINR, type Paise } from "@/lib/money";
+import { bpsOf, formatINR, toDecimalRupees, type Paise } from "@/lib/money";
 
 /**
  * Configurable TDS engine. Rates, thresholds and section labels live in the TaxRule table —
@@ -177,7 +177,7 @@ export function toCsv(rows: (string | number | bigint | null | undefined)[][]): 
   return rows.map((r) => r.map(csvCell).join(",")).join("\n") + "\n";
 }
 
-const rupeesCell = (p: Paise) => formatINR(p, { noSymbol: true, alwaysShowPaise: true }).replace(/,/g, "");
+const rupeesCell = (p: Paise) => toDecimalRupees(p);
 
 /** Per-clipper annual earnings and TDS statement for a financial year (admin CSV). */
 export async function annualTdsStatementCsv(fyStartYear: number): Promise<string> {
