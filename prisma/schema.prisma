@@ -1,0 +1,725 @@
+// ReelPay data model. See docs/ARCHITECTURE.md and docs/LEDGER.md.
+//
+// Conventions:
+// - Every money amount is an integer number of paise stored as BigInt (never floats).
+// - Sensitive values (PAN, UPI ID, OAuth tokens) are stored AES-256-GCM encrypted
+//   (`encrypted*` columns), plus a masked copy for display and a keyed HMAC
+//   (`*Hash` columns) so we can detect re-use across accounts without decrypting.
+// - IPs and user agents are only ever stored hashed.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Users, auth, organizations
+// ---------------------------------------------------------------------------
+
+enum Role {
+  FUNDER
+  CLIPPER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+}
+
+model User {
+  id            String     @id @default(cuid())
+  email         String     @unique
+  name          String?
+  emailVerified DateTime?
+  image         String?
+  roles         Role[]     @default([CLIPPER])
+  status        UserStatus @default(ACTIVE)
+  // Derived: recomputed from fraud signals on the user's submissions (0–100).
+  riskScore     Int        @default(0)
+  // Set when a clawback leaves the clipper with a negative balance, or an admin flags them.
+  flaggedAt     DateTime?
+  flagReason    String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  lastLoginAt   DateTime?
+
+  accounts          Account[]
+  sessions          Session[]
+  memberships       OrganizationMember[]
+  socialAccounts    SocialAccount[]
+  participations    CampaignParticipation[]
+  submissions       Submission[]
+  payoutProfile     PayoutProfile?
+  payouts           Payout[]
+  notifications     Notification[]
+  fingerprints      DeviceFingerprint[]
+  auditLogs         AuditLog[]              @relation("AuditActor")
+  createdCampaigns  Campaign[]              @relation("CampaignCreator")
+  duplicateAttempts DuplicateAttempt[]
+}
+
+// Auth.js (NextAuth) adapter tables.
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Organization {
+  id           String   @id @default(cuid())
+  name         String
+  gstin        String?
+  billingEmail String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  members   OrganizationMember[]
+  campaigns Campaign[]
+}
+
+enum OrgRole {
+  OWNER
+  MEMBER
+}
+
+model OrganizationMember {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  role           OrgRole  @default(OWNER)
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+}
+
+// ---------------------------------------------------------------------------
+// Campaigns
+// ---------------------------------------------------------------------------
+
+enum CampaignType {
+  CLIPPING
+  UGC
+}
+
+enum Platform {
+  INSTAGRAM
+  YOUTUBE
+  X
+}
+
+enum CampaignStatus {
+  DRAFT
+  PENDING_FUNDING
+  ACTIVE
+  PAUSED
+  EXHAUSTED
+  ENDED
+  SETTLED
+}
+
+model Campaign {
+  id                          String         @id @default(cuid())
+  organizationId              String
+  title                       String
+  description                 String         @db.Text
+  category                    String         @default("General")
+  type                        CampaignType
+  sourceContentUrls           String[]
+  // Structured rules, validated by campaignRulesSchema (src/domain/campaign-rules.ts).
+  rules                       Json
+  allowedPlatforms            Platform[]
+  ratePer1kViewsPaise         BigInt
+  budgetPaise                 BigInt
+  platformFeeBps              Int            @default(1000)
+  gstOnFeeBps                 Int            @default(1800)
+  maxPayoutPerSubmissionPaise BigInt?
+  maxPayoutPerClipperPaise    BigInt?
+  minViewsToQualify           Int            @default(0)
+  trackingWindowDays          Int            @default(7)
+  holdPeriodDays              Int            @default(7)
+  status                      CampaignStatus @default(DRAFT)
+  startsAt                    DateTime?
+  endsAt                      DateTime?
+  createdById                 String
+  isManaged                   Boolean        @default(false)
+  // Set once when the "budget almost exhausted" notification is sent.
+  lowBudgetNotifiedAt         DateTime?
+  activatedAt                 DateTime?
+  endedAt                     DateTime?
+  createdAt                   DateTime       @default(now())
+  updatedAt                   DateTime       @updatedAt
+
+  organization    Organization            @relation(fields: [organizationId], references: [id])
+  createdBy       User                    @relation("CampaignCreator", fields: [createdById], references: [id])
+  participations  CampaignParticipation[]
+  submissions     Submission[]
+  fundingPayments FundingPayment[]
+
+  @@index([status])
+}
+
+enum ParticipationStatus {
+  ACTIVE
+  LEFT
+  REMOVED
+}
+
+model CampaignParticipation {
+  id         String              @id @default(cuid())
+  campaignId String
+  clipperId  String
+  joinedAt   DateTime            @default(now())
+  status     ParticipationStatus @default(ACTIVE)
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  clipper  User     @relation(fields: [clipperId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, clipperId])
+}
+
+// ---------------------------------------------------------------------------
+// Social accounts and submissions
+// ---------------------------------------------------------------------------
+
+enum VerificationMethod {
+  OAUTH
+  BIO_CODE
+  MANUAL
+}
+
+enum SocialAccountStatus {
+  PENDING_VERIFICATION
+  VERIFIED
+  DISCONNECTED
+  REVOKED
+}
+
+model SocialAccount {
+  id                    String              @id @default(cuid())
+  userId                String
+  platform              Platform
+  platformAccountId     String
+  handle                String
+  followerCount         Int                 @default(0)
+  accountCreatedAt      DateTime?
+  isProfessional        Boolean             @default(true)
+  verificationMethod    VerificationMethod
+  verificationCode      String?
+  verifiedAt            DateTime?
+  encryptedAccessToken  String?
+  encryptedRefreshToken String?
+  tokenExpiresAt        DateTime?
+  status                SocialAccountStatus @default(PENDING_VERIFICATION)
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  submissions Submission[]
+
+  @@unique([platform, platformAccountId])
+  @@index([userId])
+}
+
+enum SubmissionStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  TRACKING
+  LOCKED
+  HELD
+  PAYABLE
+  PAID
+  REJECTED
+  FLAGGED
+  VOIDED
+  CLAWED_BACK
+}
+
+// Where a submission's metrics come from. UNAVAILABLE routes to the manual queue.
+enum MetricsSource {
+  API
+  MANUAL
+  MOCK
+  UNAVAILABLE
+}
+
+// Separate from status so a submission can keep tracking while it waits in the review queue.
+enum ReviewState {
+  NONE
+  NEEDS_REVIEW
+  CLEARED
+}
+
+model Submission {
+  id                 String            @id @default(cuid())
+  campaignId         String
+  clipperId          String
+  socialAccountId    String
+  platform           Platform
+  postUrl            String
+  platformPostId     String
+  // Resolved platform media id (Instagram media id differs from the URL shortcode).
+  platformMediaId    String?
+  caption            String?           @db.Text
+  status             SubmissionStatus  @default(SUBMITTED)
+  statusBeforeFlag   SubmissionStatus?
+  reviewState        ReviewState       @default(NONE)
+  // Fraud score when an admin cleared the submission; only a higher score re-flags it.
+  reviewClearedScore Int?
+  metricsSource      MetricsSource     @default(API)
+  rejectionReason    String?
+  lockedViews        Int?
+  // Views used for the final payable amount (min of locked and hold-end views).
+  finalViews         Int?
+  // Paise currently reserved or cleared for this submission (cache of its ledger postings).
+  earnedPaise        BigInt            @default(0)
+  fraudScore         Int               @default(0)
+  fraudDecision      String?
+  // Dev/test only: which MockAdapter scenario drives this post's metrics.
+  mockScenario       String?
+  submittedAt        DateTime          @default(now())
+  approvedAt         DateTime?
+  trackingStartedAt  DateTime?
+  trackingEndsAt     DateTime?
+  nextSnapshotAt     DateTime?
+  nextSnapshotSlot   Int               @default(0)
+  lockedAt           DateTime?
+  holdEndsAt         DateTime?
+  payableAt          DateTime?
+  paidAt             DateTime?
+  // The withdrawal (Payout) that paid this submission's earnings.
+  payoutId           String?
+  voidedAt           DateTime?
+  updatedAt          DateTime          @updatedAt
+
+  campaign        Campaign         @relation(fields: [campaignId], references: [id])
+  clipper         User             @relation(fields: [clipperId], references: [id])
+  socialAccount   SocialAccount    @relation(fields: [socialAccountId], references: [id])
+  payout          Payout?          @relation(fields: [payoutId], references: [id])
+  snapshots       MetricSnapshot[]
+  fraudSignals    FraudSignal[]
+  reviewDecisions ReviewDecision[]
+  manualEvidence  ManualEvidence[]
+
+  // The same post can never be submitted twice, anywhere in the system.
+  @@unique([platform, platformPostId])
+  @@index([status])
+  @@index([campaignId])
+  @@index([clipperId])
+  @@index([nextSnapshotAt])
+  @@index([payoutId])
+}
+
+model DuplicateAttempt {
+  id                   String   @id @default(cuid())
+  userId               String
+  platform             Platform
+  platformPostId       String
+  existingSubmissionId String
+  createdAt            DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model MetricSnapshot {
+  id           String        @id @default(cuid())
+  submissionId String
+  // Index into the polling schedule (0 = T+0, 1 = T+1h, ...). -1 = manual/ad-hoc, 1000 = lock, 2000 = hold end.
+  slot         Int
+  capturedAt   DateTime
+  views        Int
+  reach        Int?
+  likes        Int           @default(0)
+  comments     Int           @default(0)
+  shares       Int           @default(0)
+  saves        Int?
+  source       MetricsSource
+  enteredById  String?
+  rawPayload   Json?
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, slot])
+  @@index([submissionId, capturedAt])
+}
+
+// Screen recording uploaded by a clipper when API metrics are unavailable (Section 6.4).
+model ManualEvidence {
+  id           String    @id @default(cuid())
+  submissionId String
+  uploadedById String
+  fileName     String
+  mimeType     String
+  sizeBytes    Int
+  storageKey   String
+  note         String?
+  reviewedById String?
+  reviewedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------------
+// Fraud
+// ---------------------------------------------------------------------------
+
+model FraudSignal {
+  id                String   @id @default(cuid())
+  submissionId      String
+  // Which engine run produced this signal (SUBMIT, SNAPSHOT, LOCK, HOLD_END).
+  phase             String
+  ruleKey           String
+  score             Int
+  weight            Float
+  explanation       String
+  funderExplanation String
+  evidence          Json
+  createdAt         DateTime @default(now())
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+  @@index([ruleKey])
+}
+
+// Every admin decision is stored as a label for a future ML model (ROADMAP).
+model ReviewDecision {
+  id           String   @id @default(cuid())
+  submissionId String
+  adminId      String
+  decision     String // APPROVE | REJECT | VOID
+  reason       String
+  fraudScore   Int
+  // Snapshot of the signals at decision time (training features).
+  signals      Json
+  createdAt    DateTime @default(now())
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------------
+// Ledger (double-entry). See docs/LEDGER.md.
+// ---------------------------------------------------------------------------
+
+enum LedgerAccountType {
+  ASSET
+  LIABILITY
+  REVENUE
+}
+
+model LedgerAccount {
+  id        String            @id @default(cuid())
+  // e.g. "campaign_budget:ckx..." — unique and human readable.
+  code      String            @unique
+  kind      String // funder_cash_in, campaign_budget, ...
+  type      LedgerAccountType
+  // Optional link to the owning entity (campaign id, user id, organization id).
+  ownerId   String?
+  createdAt DateTime          @default(now())
+
+  entries LedgerEntry[]
+
+  @@index([kind, ownerId])
+}
+
+model LedgerTransaction {
+  id             String   @id @default(cuid())
+  // Every money movement is idempotent: re-posting the same key is a no-op.
+  idempotencyKey String   @unique
+  kind           String // FUNDING, ACCRUAL, CLEARING, VOID, CLAWBACK, PAYOUT_REQUEST, ...
+  description    String
+  campaignId     String?
+  submissionId   String?
+  payoutId       String?
+  userId         String?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  entries LedgerEntry[]
+
+  @@index([campaignId])
+  @@index([submissionId])
+  @@index([kind])
+}
+
+model LedgerEntry {
+  id            String   @id @default(cuid())
+  transactionId String
+  accountId     String
+  // Signed: positive = debit, negative = credit. Every transaction sums to zero.
+  amountPaise   BigInt
+  createdAt     DateTime @default(now())
+
+  transaction LedgerTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  account     LedgerAccount     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@index([accountId])
+  @@index([transactionId])
+}
+
+// Generic idempotency keys for non-ledger side effects (webhook receipt, provider calls).
+model IdempotencyKey {
+  key       String   @id
+  scope     String
+  response  Json?
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Payments, payouts, tax
+// ---------------------------------------------------------------------------
+
+model PayoutProfile {
+  id                        String   @id @default(cuid())
+  userId                    String   @unique
+  legalName                 String
+  encryptedUpiId            String
+  maskedUpiId               String
+  // Keyed HMAC of the normalized UPI ID; used to detect sharing across users.
+  upiHash                   String
+  encryptedPan              String?
+  maskedPan                 String?
+  panHash                   String?
+  panVerified               Boolean  @default(false)
+  accountVerificationStatus String   @default("UNVERIFIED") // UNVERIFIED | VERIFIED | FAILED
+  // Provider-side ids (RazorpayX contact / fund account); created lazily.
+  providerContactId         String?
+  providerFundAccountId     String?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([upiHash])
+  @@index([panHash])
+}
+
+enum PayoutStatus {
+  PENDING
+  APPROVED
+  PROCESSING
+  PAID
+  FAILED
+  REVERSED
+  REJECTED
+}
+
+model Payout {
+  id               String       @id @default(cuid())
+  userId           String
+  grossPaise       BigInt
+  tdsPaise         BigInt
+  netPaise         BigInt
+  taxRuleId        String?
+  // Human-readable TDS explanation (rule label, rate, FY cumulative).
+  tdsExplanation   String?
+  status           PayoutStatus @default(PENDING)
+  provider         String
+  providerPayoutId String?
+  idempotencyKey   String       @unique
+  batchId          String?
+  failureReason    String?
+  // Snapshot of the masked UPI at request time (the real one is decrypted only at send time).
+  maskedUpiId      String
+  requestedAt      DateTime     @default(now())
+  processedAt      DateTime?
+  paidAt           DateTime?
+  updatedAt        DateTime     @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id])
+  batch       PayoutBatch? @relation(fields: [batchId], references: [id])
+  submissions Submission[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+enum PayoutBatchStatus {
+  DRAFT
+  APPROVED
+  PROCESSING
+  COMPLETED
+  PARTIALLY_FAILED
+}
+
+model PayoutBatch {
+  id              String            @id @default(cuid())
+  createdById     String
+  approvedById    String?
+  status          PayoutBatchStatus @default(DRAFT)
+  totalGrossPaise BigInt            @default(0)
+  totalTdsPaise   BigInt            @default(0)
+  totalNetPaise   BigInt            @default(0)
+  payoutCount     Int               @default(0)
+  createdAt       DateTime          @default(now())
+  approvedAt      DateTime?
+  completedAt     DateTime?
+
+  payouts Payout[]
+}
+
+enum FundingStatus {
+  CREATED
+  PAID
+  FAILED
+}
+
+model FundingPayment {
+  id                String        @id @default(cuid())
+  campaignId        String
+  provider          String
+  providerOrderId   String        @unique
+  providerPaymentId String?
+  budgetPaise       BigInt
+  feePaise          BigInt
+  gstPaise          BigInt
+  // budget + fee + GST on fee
+  amountPaise       BigInt
+  status            FundingStatus @default(CREATED)
+  idempotencyKey    String        @unique
+  paidAt            DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id])
+}
+
+model TaxRule {
+  id                           String    @id @default(cuid())
+  name                         String
+  appliesTo                    String // CLIPPER_PAYOUT
+  ratePctBps                   Int
+  rateWithoutPanBps            Int
+  annualThresholdPaise         BigInt
+  perTransactionThresholdPaise BigInt?
+  // Free text. Never hardcode section numbers in code (Income-tax Act, 2025 renumbered them).
+  sectionLabel                 String
+  notes                        String?
+  effectiveFrom                DateTime
+  effectiveTo                  DateTime?
+  active                       Boolean   @default(true)
+  createdAt                    DateTime  @default(now())
+  updatedAt                    DateTime  @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Settings, audit, notifications, fingerprints, ops
+// ---------------------------------------------------------------------------
+
+model Setting {
+  key         String   @id
+  value       Json
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  // "system" for jobs, "webhook:<provider>" for provider callbacks.
+  actorLabel String
+  action     String
+  entityType String
+  entityId   String
+  before     Json?
+  after      Json?
+  ipHash     String?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  kind      String
+  title     String
+  body      String
+  href      String?
+  readAt    DateTime?
+  emailedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+}
+
+model DeviceFingerprint {
+  id            String   @id @default(cuid())
+  userId        String
+  ipHash        String
+  userAgentHash String
+  firstSeen     DateTime @default(now())
+  lastSeen      DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, ipHash, userAgentHash])
+  @@index([ipHash])
+}
+
+model ApiQuotaUsage {
+  id        String   @id @default(cuid())
+  provider  String // youtube, instagram
+  // Pacific-time day for YouTube (quota resets at midnight PT), stored as YYYY-MM-DD.
+  day       String
+  units     Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@unique([provider, day])
+}
+
+model HealthCheck {
+  id        String   @id @default(cuid())
+  kind      String // LEDGER_VERIFY, QUOTA_ALERT
+  ok        Boolean
+  details   Json
+  createdAt DateTime @default(now())
+
+  @@index([kind, createdAt])
+}
